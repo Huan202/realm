@@ -60,8 +60,8 @@ confirm_uninstall() {
     echo "  - 端口流量狗 dog、配置目录和相关定时任务/服务"
     echo "  - health-check、MPTCP 配置和 systemd/OpenRC 残留"
     echo ""
-    read -p "确认彻底卸载请输入 DELETE: " confirm
-    if [ "$confirm" != "DELETE" ]; then
+    read -p "确认彻底卸载？(y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}已取消卸载${NC}"
         exit 0
     fi

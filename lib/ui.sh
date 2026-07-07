@@ -286,8 +286,8 @@ uninstall_realm() {
     echo "  - 端口流量狗 dog、配置目录和相关定时任务/服务"
     echo "  - health-check、MPTCP 配置和 systemd/OpenRC 残留"
     echo ""
-    read -p "确认彻底卸载请输入 DELETE: " confirm_uninstall
-    if [ "$confirm_uninstall" != "DELETE" ]; then
+    read -p "确认彻底卸载？(y/n): " confirm_uninstall
+    if [[ ! "$confirm_uninstall" =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}已取消卸载${NC}"
         return 0
     fi
