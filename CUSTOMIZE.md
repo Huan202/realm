@@ -1,38 +1,17 @@
-﻿# Custom Realm xwPF Fork
+# Customization Notes
 
-This copy is based on `zywe03/realm-xwPF` under the MIT License.
+This copy is configured for:
 
-## Replace the GitHub Repository
+https://github.com/Huan202/realm
 
-Replace every `Huan202` placeholder with your GitHub username:
-
-```bash
-grep -RIl 'Huan202' . | xargs sed -i 's/Huan202/Huan202/g'
-```
-
-If your repository name is not `realme`, also replace `realme`.
-
-## Install From Your Repository
-
-After uploading this folder to:
-
-```text
-https://github.com/Huan202/realme
-```
-
-install with:
+Install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Huan202/realme/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Huan202/realm/main/install.sh | bash
 ```
 
-Or without editing placeholders locally:
+If you need to install from another fork, override the owner/name:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Huan202/realme/main/install.sh | REALM_XWPF_REPO_OWNER=Huan202 bash
+curl -fsSL https://raw.githubusercontent.com/Huan202/realm/main/install.sh | REALM_XWPF_REPO_OWNER=Huan202 REALM_XWPF_REPO_NAME=realm bash
 ```
-
-## Notes
-
-- Keep `LICENSE` when redistributing this project.
-- This fork still downloads the official `zhboner/realm` binary release.
