@@ -277,49 +277,50 @@ rules_management_menu() {
 
 # 卸载函数
 uninstall_realm() {
-    echo -e "${RED}⚠️  警告: 即将分阶段卸载 Realm 端口转发服务${NC}"
+    echo -e "${RED}⚠️  危险操作: 即将彻底卸载 xwPF Realm 全部组件${NC}"
     echo ""
-
-    # 第一阶段：Realm 服务和配置
-    echo -e "${YELLOW}=== 第一阶段：Realm 相关全部服务和配置文件 ===${NC}"
-    read -p "确认删除 Realm 服务和配置？(y/n): " confirm_realm
-    if [[ "$confirm_realm" =~ ^[Yy]$ ]]; then
-        uninstall_realm_stage_one
-        echo -e "${GREEN}✓ 第一阶段完成${NC}"
-    else
-        echo -e "${BLUE}第一阶段已取消${NC}"
+    echo -e "${YELLOW}将删除以下内容:${NC}"
+    echo "  - realm 服务、realm 内核和 /etc/realm 配置目录"
+    echo "  - pf 主脚本、lib 模块目录和快捷命令"
+    echo "  - 故障转移、链路测试、配置识别脚本"
+    echo "  - 端口流量狗 dog、配置目录和相关定时任务/服务"
+    echo "  - health-check、MPTCP 配置和 systemd/OpenRC 残留"
+    echo ""
+    read -p "确认彻底卸载请输入 DELETE: " confirm_uninstall
+    if [ "$confirm_uninstall" != "DELETE" ]; then
+        echo -e "${BLUE}已取消卸载${NC}"
         return 0
     fi
 
-    echo ""
-    # 第二阶段：脚本文件
-    echo -e "${YELLOW}=== 第二阶段：xwPF 脚本相关全部文件 ===${NC}"
-    read -p "确认删除脚本文件？(y/n): " confirm_script
-    if [[ "$confirm_script" =~ ^[Yy]$ ]]; then
-        uninstall_script_files
-        echo -e "${GREEN}🗑️  完全卸载完成${NC}"
-    else
-        echo -e "${BLUE}脚本文件保留，可继续使用 pf 命令${NC}"
-    fi
+    uninstall_realm_stage_one
+    uninstall_script_files
+    uninstall_extra_components
+    echo -e "${GREEN}🗑️  xwPF Realm 已彻底卸载完成${NC}"
+    echo -e "${YELLOW}提示: 如当前 shell 仍记得旧命令路径，可执行 hash -r 刷新缓存${NC}"
+    exit 0
 }
 
 # 第一阶段：清理 Realm 相关
 uninstall_realm_stage_one() {
-    # 停止服务
-    svc_is_active && svc_stop
-    [ "$(svc_enabled_text)" = "enabled" ] && svc_disable
-    # 停止健康检查服务（通过xwFailover.sh）
+    echo -e "${YELLOW}正在停止 Realm 和健康检查服务...${NC}"
+    stop_disable_service "realm"
+    stop_disable_service "realm-health-check.timer"
+    stop_disable_service "realm-health-check.service"
+
+    # 停止健康检查服务（通过 xwFailover.sh）
     if [ -f "/etc/realm/xwFailover.sh" ]; then
         bash "/etc/realm/xwFailover.sh" stop >/dev/null 2>&1
     fi
-    pgrep "realm" >/dev/null 2>&1 && { pkill -f "realm"; sleep 2; pkill -9 -f "realm" 2>/dev/null; }
+    pgrep -x "realm" >/dev/null 2>&1 && { pkill -x "realm"; sleep 2; pkill -9 -x "realm" 2>/dev/null; }
 
-    # 清理文件
+    echo -e "${YELLOW}正在删除 Realm 内核、配置和服务文件...${NC}"
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
     [ -f "/etc/init.d/realm" ] && rm -f "/etc/init.d/realm"
-    cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
+    rm -f /etc/systemd/system/realm-health-check.service
+    rm -f /etc/systemd/system/realm-health-check.timer
+    rm -f /var/lock/realm-health-check.lock
+    rm -f /tmp/realm* /var/tmp/realm* /var/log/realm*.log 2>/dev/null
 
-    # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
     command -v ip >/dev/null 2>&1 && ip mptcp endpoint flush 2>/dev/null
     svc_daemon_reload
@@ -327,7 +328,7 @@ uninstall_realm_stage_one() {
 
 # 第二阶段：清理脚本文件
 uninstall_script_files() {
-    # 清理主脚本和模块目录
+    echo -e "${YELLOW}正在删除 xwPF 主脚本和模块...${NC}"
     rm -f "$INSTALL_DIR/xwPF.sh"
     [ -d "$LIB_DIR" ] && rm -rf "$LIB_DIR"
 
@@ -337,6 +338,51 @@ uninstall_script_files() {
         [ -f "$dir/pf" ] && grep -q "xwPF" "$dir/pf" 2>/dev/null && rm -f "$dir/pf"
         [ -L "$dir/pf" ] && rm -f "$dir/pf"
     done
+}
+
+# 停止并禁用服务，兼容 systemd/OpenRC
+stop_disable_service() {
+    local service_name="$1"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop "$service_name" >/dev/null 2>&1 || true
+        systemctl disable "$service_name" >/dev/null 2>&1 || true
+    fi
+    if command -v rc-service >/dev/null 2>&1; then
+        rc-service "$service_name" stop >/dev/null 2>&1 || true
+    fi
+    if command -v rc-update >/dev/null 2>&1; then
+        rc-update del "$service_name" default >/dev/null 2>&1 || true
+    fi
+}
+
+# 第三阶段：清理附加组件
+uninstall_extra_components() {
+    echo -e "${YELLOW}正在删除故障转移、链路测试、OCR 和端口流量狗...${NC}"
+    stop_disable_service "port-traffic-dog.service"
+    stop_disable_service "port-traffic-dog.timer"
+
+    rm -f /usr/local/bin/xwFailover.sh
+    rm -f /usr/local/bin/speedtest.sh
+    rm -f /usr/local/bin/port-traffic-dog.sh
+    rm -f /usr/local/bin/dog
+    rm -f /etc/realm/xwFailover.sh
+    rm -f /etc/realm/speedtest.sh
+    rm -f /etc/realm/xw_realm_OCR.sh
+    rm -rf /etc/port-traffic-dog
+
+    rm -f /etc/systemd/system/port-traffic-dog.service
+    rm -f /etc/systemd/system/port-traffic-dog.timer
+    rm -f /tmp/speedtest_* /tmp/port-traffic-dog* 2>/dev/null
+
+    if command -v crontab >/dev/null 2>&1; then
+        local temp_cron="/tmp/xwpf_uninstall_cron_$$"
+        crontab -l 2>/dev/null | grep -v "port-traffic-dog" | grep -v "端口流量狗" > "$temp_cron" || true
+        crontab "$temp_cron" 2>/dev/null || true
+        rm -f "$temp_cron"
+    fi
+
+    svc_daemon_reload
+    command -v systemctl >/dev/null 2>&1 && systemctl reset-failed >/dev/null 2>&1 || true
 }
 
 # 文件路径清理函数
@@ -724,7 +770,7 @@ show_menu() {
         echo -e "${GREEN}5.${NC} 查看日志"
         echo -e "${BLUE}6.${NC} 端口流量狗（统计端口流量）"
         echo -e "${BLUE}7.${NC} 中转网络链路测试"
-        echo -e "${RED}8.${NC} 卸载服务"
+        echo -e "${RED}8.${NC} 一键彻底卸载"
         echo -e "${YELLOW}0.${NC} 退出"
         echo ""
 
