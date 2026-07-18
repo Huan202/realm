@@ -5,7 +5,7 @@
 
 # 安装路径
 INSTALL_DIR="/usr/local/bin"
-LIB_DIR="$INSTALL_DIR/lib"
+LIB_DIR="/usr/local/lib/xwpf"
 SHORTCUT_PATH="/usr/local/bin/pf"
 
 # 仓库地址
@@ -45,21 +45,23 @@ _cache_bust_url() {
 _bootstrap() {
     echo -e "${_YELLOW}正在安装/更新脚本文件...${_NC}"
 
-    mkdir -p "$LIB_DIR"
+    local stage_dir
+    stage_dir=$(mktemp -d) || return 1
+    mkdir -p "$stage_dir/lib"
 
-    # 下载入口脚本
-    if _download "$(_cache_bust_url "$REPO_RAW_URL/xwPF.sh")" "$INSTALL_DIR/xwPF.sh"; then
-        chmod +x "$INSTALL_DIR/xwPF.sh"
+    # 先完整下载到临时目录，避免更新中断后新旧模块混用
+    if _download "$(_cache_bust_url "$REPO_RAW_URL/xwPF.sh")" "$stage_dir/xwPF.sh"; then
         echo -e "  ${_GREEN}✓${_NC} xwPF.sh"
     else
         echo -e "  ${_RED}✗${_NC} xwPF.sh 下载失败"
+        rm -rf "$stage_dir"
         return 1
     fi
 
     # 下载所有模块
     local failed=0
     for f in "${LIB_FILES[@]}"; do
-        if _download "$(_cache_bust_url "$REPO_RAW_URL/lib/$f")" "$LIB_DIR/$f"; then
+        if _download "$(_cache_bust_url "$REPO_RAW_URL/lib/$f")" "$stage_dir/lib/$f"; then
             echo -e "  ${_GREEN}✓${_NC} lib/$f"
         else
             echo -e "  ${_RED}✗${_NC} lib/$f 下载失败"
@@ -67,7 +69,45 @@ _bootstrap() {
         fi
     done
 
-    [ "$failed" -eq 1 ] && return 1
+    if [ "$failed" -eq 1 ]; then
+        rm -rf "$stage_dir"
+        return 1
+    fi
+
+    # 所有文件到齐后再构建新目录，并通过重命名一次性切换
+    local next_lib_dir="${LIB_DIR}.new.$$"
+    local old_lib_dir="${LIB_DIR}.old.$$"
+    local next_entry="${INSTALL_DIR}/.xwPF.sh.new.$$"
+    mkdir -p "$(dirname "$LIB_DIR")" "$next_lib_dir"
+    if ! install -m 0755 "$stage_dir/xwPF.sh" "$next_entry"; then
+        rm -rf "$stage_dir" "$next_lib_dir"
+        return 1
+    fi
+    for f in "${LIB_FILES[@]}"; do
+        if ! install -m 0644 "$stage_dir/lib/$f" "$next_lib_dir/$f"; then
+            rm -rf "$stage_dir" "$next_lib_dir"
+            rm -f "$next_entry"
+            return 1
+        fi
+    done
+    rm -rf "$stage_dir"
+
+    if [ -d "$LIB_DIR" ]; then
+        mv "$LIB_DIR" "$old_lib_dir" || return 1
+    fi
+    if ! mv "$next_lib_dir" "$LIB_DIR" || ! mv -f "$next_entry" "$INSTALL_DIR/xwPF.sh"; then
+        rm -rf "$LIB_DIR" "$next_lib_dir"
+        [ -d "$old_lib_dir" ] && mv "$old_lib_dir" "$LIB_DIR"
+        rm -f "$next_entry"
+        return 1
+    fi
+    rm -rf "$old_lib_dir"
+
+    # 清理旧版本的通用目录，仅移除本项目已知模块
+    for f in "${LIB_FILES[@]}"; do
+        rm -f "$INSTALL_DIR/lib/$f"
+    done
+    rmdir "$INSTALL_DIR/lib" 2>/dev/null || true
 
     # 创建快捷命令
     ln -sf "$INSTALL_DIR/xwPF.sh" "$SHORTCUT_PATH"
@@ -81,7 +121,7 @@ _bootstrap() {
 _load_libs() {
     if [ ! -d "$LIB_DIR" ] || [ ! -f "$LIB_DIR/core.sh" ]; then
         echo -e "${_RED}错误: 未找到模块目录，请先安装${_NC}"
-        echo -e "${_BLUE}wget -qO- ${REPO_RAW_URL}/xwPF.sh | sudo bash -s install${_NC}"
+        echo -e "${_BLUE}curl -fsSL ${REPO_RAW_URL}/install.sh | bash${_NC}"
         return 1
     fi
 

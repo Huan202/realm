@@ -1,8 +1,9 @@
 #!/bin/bash
 
 set -euo pipefail
+umask 077
 
-readonly SCRIPT_VERSION="1.2.5"
+readonly SCRIPT_VERSION="1.3.0"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -147,6 +148,7 @@ check_root() {
 
 init_config() {
     mkdir -p "$CONFIG_DIR" "$(dirname "$LOG_FILE")"
+    chmod 700 "$CONFIG_DIR" "$(dirname "$LOG_FILE")"
 
     # 静默下载通知模块，避免影响主流程
     download_notification_modules >/dev/null 2>&1 || true
@@ -190,6 +192,7 @@ init_config() {
 }
 EOF
     fi
+    chmod 600 "$CONFIG_FILE"
 
     init_nftables
     setup_exit_hooks
@@ -556,7 +559,7 @@ calculate_total_traffic() {
     local billing_mode=${3:-"double"}
     case $billing_mode in
         "double")
-            # 双向统计：input + output（计数器已在规则层面×2）
+            # 双向统计：input + output
             echo $((input_bytes + output_bytes))
             ;;
         "single"|*)
@@ -1200,27 +1203,19 @@ add_nftables_rules() {
         local mark_id=$(generate_port_range_mark "$port")
 
         if [ "$billing_mode" = "double" ]; then
-            # 双向模式：创建 in 和 out 两个计数器，各绑定规则两次（×2）
+            # 双向模式：入站和出站各统计一次
             nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || \
                 nft add counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
             nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
                 nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
-            # in 计数器：绑定 input 规则两次（in × 2）
-            nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
-            nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
-            nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
-            nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            # in 计数器
             nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
             nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
             nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
             nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
 
-            # out 计数器：绑定 output 规则两次（out × 2）
-            nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-            nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-            nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-            nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            # out 计数器
             nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
             nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
             nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
@@ -1243,21 +1238,13 @@ add_nftables_rules() {
             nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || \
                 nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
 
-            # in 计数器：绑定 input 规则两次（in × 2）
-            nft add rule $family $table_name input tcp dport $port counter name "port_${port}_in"
-            nft add rule $family $table_name input udp dport $port counter name "port_${port}_in"
-            nft add rule $family $table_name forward tcp dport $port counter name "port_${port}_in"
-            nft add rule $family $table_name forward udp dport $port counter name "port_${port}_in"
+            # in 计数器
             nft add rule $family $table_name input tcp dport $port counter name "port_${port}_in"
             nft add rule $family $table_name input udp dport $port counter name "port_${port}_in"
             nft add rule $family $table_name forward tcp dport $port counter name "port_${port}_in"
             nft add rule $family $table_name forward udp dport $port counter name "port_${port}_in"
 
-            # out 计数器：绑定 output 规则两次（out × 2）
-            nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
-            nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
-            nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
-            nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
+            # out 计数器
             nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
             nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
             nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
@@ -1664,21 +1651,11 @@ apply_nftables_quota() {
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
         if [ "$billing_mode" = "double" ]; then
-            # 双向模式：配额规则与计数器一致，input×2 + output×2
-            # input×2
+            # 双向模式：配额规则与计数器一致，input + output
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            # output×2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
@@ -1698,21 +1675,11 @@ apply_nftables_quota() {
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
         if [ "$billing_mode" = "double" ]; then
-            # 双向模式：配额规则与计数器一致，input×2 + output×2
-            # input×2
+            # 双向模式：配额规则与计数器一致，input + output
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            # output×2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
@@ -2207,16 +2174,32 @@ import_config() {
 
     # 解压到临时目录进行验证
     cd "$temp_dir"
-    if ! tar -tzf "$package_path" >/dev/null 2>&1; then
+    local entry
+    while IFS= read -r entry; do
+        case "$entry" in
+            /*|../*|*/../*|*/..)
+                echo -e "${RED}错误：配置包包含不安全路径${NC}"
+                rm -rf "$temp_dir"
+                return 1
+                ;;
+        esac
+    done < <(tar -tzf "$package_path" 2>/dev/null) || {
         echo -e "${RED}错误：配置包文件损坏或格式错误${NC}"
         rm -rf "$temp_dir"
-        sleep 2
-        import_config
-        return
-    fi
+        return 1
+    }
 
     # 解压配置包
-    tar -xzf "$package_path" 2>/dev/null
+    tar -xzf "$package_path" 2>/dev/null || {
+        rm -rf "$temp_dir"
+        return 1
+    }
+
+    if find "$temp_dir" -type l -print -quit | grep -q .; then
+        echo -e "${RED}错误：配置包不能包含符号链接${NC}"
+        rm -rf "$temp_dir"
+        return 1
+    fi
 
     # 验证配置包结构
     local config_dir_name=$(ls | head -n1)
@@ -2237,6 +2220,41 @@ import_config() {
         sleep 2
         import_config
         return
+    fi
+
+    if ! jq -e . "$extracted_config/config.json" >/dev/null 2>&1; then
+        echo -e "${RED}错误：config.json 不是有效 JSON${NC}"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    local imported_family imported_table
+    imported_family=$(jq -r '.nftables.family // ""' "$extracted_config/config.json")
+    imported_table=$(jq -r '.nftables.table_name // ""' "$extracted_config/config.json")
+    if [ "$imported_family" != "inet" ] || [[ ! "$imported_table" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,31}$ ]]; then
+        echo -e "${RED}错误：配置包包含不安全的 nftables 配置${NC}"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    local ports_valid=true imported_port range_start range_end
+    while IFS= read -r imported_port; do
+        if [[ "$imported_port" =~ ^[0-9]+$ ]]; then
+            [ "$imported_port" -ge 1 ] && [ "$imported_port" -le 65535 ] || ports_valid=false
+        elif [[ "$imported_port" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            range_start="${BASH_REMATCH[1]}"
+            range_end="${BASH_REMATCH[2]}"
+            [ "$range_start" -ge 1 ] && [ "$range_end" -le 65535 ] && \
+                [ "$range_start" -le "$range_end" ] || ports_valid=false
+        else
+            ports_valid=false
+        fi
+    done < <(jq -r '.ports | keys[]' "$extracted_config/config.json")
+
+    if [ "$ports_valid" != "true" ]; then
+        echo -e "${RED}错误：配置包包含无效端口${NC}"
+        rm -rf "$temp_dir"
+        return 1
     fi
 
     # 显示端口流量狗配置包信息
@@ -2286,6 +2304,8 @@ import_config() {
     rm -rf "$CONFIG_DIR" 2>/dev/null || true
     mkdir -p "$(dirname "$CONFIG_DIR")"
     cp -r "$extracted_config" "$CONFIG_DIR"
+    chmod 700 "$CONFIG_DIR" "$CONFIG_DIR/logs" 2>/dev/null || true
+    chmod 600 "$CONFIG_FILE"
 
     # 3. 重新应用规则
     echo "正在重新应用监控规则..."

@@ -82,13 +82,45 @@ download_from_sources() {
 }
 
 
+verify_release_asset() {
+    local version="$1" asset_name="$2" file_path="$3"
+    command -v sha256sum >/dev/null 2>&1 || {
+        echo -e "${YELLOW}警告: 系统缺少 sha256sum，跳过完整性校验${NC}" >&2
+        return 0
+    }
+
+    local expected_digest
+    expected_digest=$(curl -fsSL --retry 2 --connect-timeout "$SHORT_CONNECT_TIMEOUT" \
+        --max-time "$SHORT_MAX_TIMEOUT" \
+        "https://api.github.com/repos/zhboner/realm/releases/tags/${version}" 2>/dev/null | \
+        jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .digest // empty' 2>/dev/null)
+
+    if [[ "$expected_digest" =~ ^sha256:([0-9a-fA-F]{64})$ ]]; then
+        local actual_digest
+        actual_digest=$(sha256sum "$file_path" | awk '{print $1}')
+        if [ "${actual_digest,,}" != "${BASH_REMATCH[1],,}" ]; then
+            echo -e "${RED}✗ 下载文件 SHA-256 校验失败${NC}" >&2
+            return 1
+        fi
+        echo -e "${GREEN}✓ 下载文件完整性校验通过${NC}" >&2
+    else
+        echo -e "${YELLOW}警告: 上游未提供可用摘要，继续执行基础文件校验${NC}" >&2
+    fi
+}
+
 # 获取realm最新版本号
 get_latest_realm_version() {
     echo -e "${YELLOW}获取最新版本信息...${NC}" >&2
 
-    local latest_version=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "https://github.com/zhboner/realm/releases" 2>/dev/null | \
-        head -2100 | \
-        sed -n 's|.*releases/tag/v\([0-9.]*\).*|v\1|p' | head -1)
+    local latest_version
+    latest_version=$(curl -fsSL --retry 2 --connect-timeout "$SHORT_CONNECT_TIMEOUT" \
+        --max-time "$SHORT_MAX_TIMEOUT" \
+        "https://api.github.com/repos/zhboner/realm/releases/latest" 2>/dev/null | \
+        jq -r '.tag_name // empty' 2>/dev/null)
+
+    if [[ ! "$latest_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        latest_version=""
+    fi
 
     if [ -z "$latest_version" ]; then
         echo -e "${YELLOW}使用当前最新版本 ${REALM_VERSION}${NC}" >&2
@@ -158,12 +190,12 @@ safe_stop_realm_service() {
     local service_was_running=false
 
     if svc_is_active; then
-        echo -e "${BLUE}检测到realm服务正在运行，正在停止服务...${NC}"
+        echo -e "${BLUE}检测到realm服务正在运行，正在停止服务...${NC}" >&2
         if svc_stop >/dev/null 2>&1; then
-            echo -e "${GREEN}✓ realm服务已停止${NC}"
+            echo -e "${GREEN}✓ realm服务已停止${NC}" >&2
             service_was_running=true
         else
-            echo -e "${RED}✗ 停止realm服务失败，无法安全更新${NC}"
+            echo -e "${RED}✗ 停止realm服务失败，无法安全更新${NC}" >&2
             return 1
         fi
     fi
@@ -254,12 +286,19 @@ install_realm() {
         DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_VERSION}/realm-${ARCH}.tar.gz"
         echo -e "${BLUE}目标文件: realm-${ARCH}.tar.gz${NC}"
 
-        local file_path="$(pwd)/realm.tar.gz"
+        local download_dir
+        download_dir=$(mktemp -d) || return 1
+        local file_path="${download_dir}/realm.tar.gz"
         if download_from_sources "$DOWNLOAD_URL" "$file_path"; then
+            if ! verify_release_asset "$LATEST_VERSION" "realm-${ARCH}.tar.gz" "$file_path"; then
+                rm -rf "$download_dir"
+                return 1
+            fi
             echo -e "${GREEN}✓ 下载成功: ${file_path}${NC}"
             download_file="$file_path"
         else
             echo -e "${RED}✗ 下载失败${NC}"
+            rm -rf "$download_dir"
             exit 1
         fi
     fi
@@ -267,26 +306,53 @@ install_realm() {
     # 解压安装
     echo -e "${YELLOW}正在解压安装...${NC}"
 
-    local service_was_running=$(safe_stop_realm_service)
-    if [ $? -ne 0 ]; then
+    local service_was_running
+    if ! service_was_running=$(safe_stop_realm_service); then
+        [ -n "${download_dir:-}" ] && rm -rf "$download_dir"
         return 1
     fi
 
-    local work_dir=$(dirname "$download_file")
-    local archive_name=$(basename "$download_file")
+    local extract_dir
+    extract_dir=$(mktemp -d) || {
+        [ -n "${download_dir:-}" ] && rm -rf "$download_dir"
+        restart_realm_service "$service_was_running" false
+        return 1
+    }
+    local backup_path="${extract_dir}/realm.backup"
 
-    if (cd "$work_dir" && tar -xzf "$archive_name" && cp realm ${REALM_PATH} && chmod +x ${REALM_PATH}); then
+    if [ -f "$REALM_PATH" ]; then
+        cp -p "$REALM_PATH" "$backup_path" || {
+            rm -rf "$extract_dir"
+            [ -n "${download_dir:-}" ] && rm -rf "$download_dir"
+            restart_realm_service "$service_was_running" false
+            return 1
+        }
+    fi
+
+    if tar -xzf "$download_file" -C "$extract_dir" >/dev/null 2>&1 && \
+       [ -f "$extract_dir/realm" ] && \
+       install -m 0755 "$extract_dir/realm" "${REALM_PATH}.new" && \
+       "${REALM_PATH}.new" --help >/dev/null 2>&1 && \
+       mv -f "${REALM_PATH}.new" "$REALM_PATH"; then
         echo -e "${GREEN}✓ realm 安装成功${NC}"
         
         # 只删除自动下载的文件，保留用户提供的本地文件
-        if [ -z "$local_package_path" ]; then
-            rm -f "$download_file"
+        if [ -z "$local_package_path" ] && [ -n "${download_dir:-}" ]; then
+            rm -rf "$download_dir"
         fi
-        rm -f "${work_dir}/realm"
+        rm -rf "$extract_dir"
 
         restart_realm_service "$service_was_running" true
     else
         echo -e "${RED}✗ 安装失败${NC}"
+        rm -f "${REALM_PATH}.new"
+        if [ -f "$backup_path" ]; then
+            install -m 0755 "$backup_path" "$REALM_PATH"
+            echo -e "${YELLOW}已恢复原 realm 程序${NC}"
+        fi
+        rm -rf "$extract_dir"
+        [ -n "${download_dir:-}" ] && rm -rf "$download_dir"
+        restart_realm_service "$service_was_running" false
         exit 1
     fi
 }

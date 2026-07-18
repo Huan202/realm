@@ -182,15 +182,44 @@ generate_rule_id() {
 
 read_rule_file() {
     local rule_file="$1"
-    if [ -f "$rule_file" ]; then
-        source "$rule_file"
-        RULE_NOTE="${RULE_NOTE:-}"
-        MPTCP_MODE="${MPTCP_MODE:-off}"
-        PROXY_MODE="${PROXY_MODE:-off}"
-        return 0
-    else
-        return 1
-    fi
+    [ -f "$rule_file" ] || return 1
+
+    local allowed_fields=(
+        RULE_ID RULE_NAME RULE_ROLE SECURITY_LEVEL LISTEN_PORT LISTEN_IP THROUGH_IP
+        REMOTE_HOST REMOTE_PORT FORWARD_TARGET TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH
+        WS_PATH WS_HOST RULE_NOTE ENABLED CREATED_TIME BALANCE_MODE TARGET_STATES WEIGHTS
+        FAILOVER_ENABLED HEALTH_CHECK_INTERVAL FAILURE_THRESHOLD SUCCESS_THRESHOLD
+        CONNECTION_TIMEOUT MPTCP_MODE PROXY_MODE
+    )
+    local field
+    for field in "${allowed_fields[@]}"; do
+        unset "$field"
+    done
+
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            RULE_ID|RULE_NAME|RULE_ROLE|SECURITY_LEVEL|LISTEN_PORT|LISTEN_IP|THROUGH_IP|\
+            REMOTE_HOST|REMOTE_PORT|FORWARD_TARGET|TLS_SERVER_NAME|TLS_CERT_PATH|TLS_KEY_PATH|\
+            WS_PATH|WS_HOST|RULE_NOTE|ENABLED|CREATED_TIME|BALANCE_MODE|TARGET_STATES|WEIGHTS|\
+            FAILOVER_ENABLED|HEALTH_CHECK_INTERVAL|FAILURE_THRESHOLD|SUCCESS_THRESHOLD|\
+            CONNECTION_TIMEOUT|MPTCP_MODE|PROXY_MODE) ;;
+            *) continue ;;
+        esac
+        if [[ "$value" == \"*\" && "$value" == *\" && ${#value} -ge 2 ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+        printf -v "$key" '%s' "$value"
+    done < "$rule_file"
+
+    RULE_NOTE="${RULE_NOTE:-}"
+    MPTCP_MODE="${MPTCP_MODE:-off}"
+    PROXY_MODE="${PROXY_MODE:-off}"
+    [[ "${RULE_ID:-}" =~ ^[0-9]+$ && "${RULE_ROLE:-}" =~ ^[12]$ ]]
 }
 
 get_balance_info_display() {
@@ -1232,7 +1261,25 @@ validate_config_package_content() {
     local package_file="$1"
     local temp_dir=$(mktemp -d)
 
-    if ! tar -xzf "$package_file" -C "$temp_dir" >/dev/null 2>&1; then
+    local entry
+    while IFS= read -r entry; do
+        case "$entry" in
+            /*|../*|*/../*|*/..)
+                rm -rf "$temp_dir"
+                return 1
+                ;;
+        esac
+    done < <(tar -tzf "$package_file" 2>/dev/null) || {
+        rm -rf "$temp_dir"
+        return 1
+    }
+
+    if ! (umask 077; tar -xzf "$package_file" -C "$temp_dir") >/dev/null 2>&1; then
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    if find "$temp_dir" -type l -print -quit | grep -q .; then
         rm -rf "$temp_dir"
         return 1
     fi
@@ -1285,19 +1332,37 @@ import_config_package() {
 
     echo -e "${BLUE}配置包: ${GREEN}$selected_filename${NC}"
 
+    local validated_rules=0 imported_rule
+    if [ -d "${config_dir}/rules" ]; then
+        for imported_rule in "${config_dir}/rules"/rule-*.conf; do
+            [ -f "$imported_rule" ] || continue
+            if ! read_rule_file "$imported_rule" || ! validate_port "${LISTEN_PORT:-}"; then
+                echo -e "${RED}配置包包含无效规则: $(basename "$imported_rule")${NC}"
+                rm -rf "$(dirname "$config_dir")"
+                return 1
+            fi
+            validated_rules=$((validated_rules + 1))
+        done
+    fi
+
+    local package_rules_count=0
     if [ -f "${config_dir}/metadata.txt" ]; then
-        source "${config_dir}/metadata.txt"
+        local package_export_time package_script_version
+        package_export_time=$(sed -n 's/^EXPORT_TIME=//p' "${config_dir}/metadata.txt" | head -1 | tr -d '\r')
+        package_script_version=$(sed -n 's/^SCRIPT_VERSION=//p' "${config_dir}/metadata.txt" | head -1 | tr -d '\r')
+        package_rules_count=$(sed -n 's/^RULES_COUNT=//p' "${config_dir}/metadata.txt" | head -1 | tr -d '\r')
+        [[ "$package_rules_count" =~ ^[0-9]+$ ]] || package_rules_count=0
         echo -e "${BLUE}配置包信息：${NC}"
-        echo -e "  导出时间: ${GREEN}$EXPORT_TIME${NC}"
-        echo -e "  脚本版本: ${GREEN}$SCRIPT_VERSION${NC}"
-        echo -e "  规则数量: ${GREEN}$RULES_COUNT${NC}"
+        echo -e "  导出时间: ${GREEN}${package_export_time:-未知}${NC}"
+        echo -e "  脚本版本: ${GREEN}${package_script_version:-未知}${NC}"
+        echo -e "  规则数量: ${GREEN}$package_rules_count${NC}"
         echo ""
     fi
 
     local current_rules=$(get_active_rules_count)
 
     echo -e "${YELLOW}当前规则数量: $current_rules${NC}"
-    echo -e "${YELLOW}即将导入规则: $RULES_COUNT${NC}"
+    echo -e "${YELLOW}即将导入规则: $package_rules_count${NC}"
     echo ""
     echo -e "${RED}警告: 导入操作将覆盖所有现有配置！${NC}"
     echo ""
