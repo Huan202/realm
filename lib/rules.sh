@@ -180,6 +180,11 @@ generate_rule_id() {
     echo $((max_id + 1))
 }
 
+# 按 rule-N.conf 中 N 的数字序返回文件列表，避免 glob 字典序 (1,10,2)
+get_sorted_rule_files() {
+    ls "${RULES_DIR}"/rule-*.conf 2>/dev/null | sort -t- -k2 -n
+}
+
 read_rule_file() {
     local rule_file="$1"
     if [ -f "$rule_file" ]; then
@@ -259,7 +264,7 @@ list_rules_with_info() {
     local relay_count=0
 
     if [ "$display_mode" = "management" ]; then
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
+        for rule_file in $(get_sorted_rule_files); do
             if [ -f "$rule_file" ]; then
                 if read_and_check_relay_rule "$rule_file"; then
                     if [ "$has_relay_rules" = false ]; then
@@ -277,7 +282,7 @@ list_rules_with_info() {
     local exit_count=0
     local has_rules=false
 
-    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+    for rule_file in $(get_sorted_rule_files); do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file"; then
                 has_rules=true
@@ -403,7 +408,7 @@ list_all_rules() {
     fi
 
     local count=0
-    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+    for rule_file in $(get_sorted_rule_files); do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file"; then
                 count=$((count + 1))
