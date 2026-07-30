@@ -1,0 +1,30 @@
+name: Shell Syntax
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bash-syntax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Validate Bash syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            echo "Checking $script"
+            bash -n "$script"
+          done < <(find . -type f -name '*.sh' -print0)
+
+      - name: Run security smoke tests
+        run: bash tests/security-smoke.sh

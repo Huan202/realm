@@ -22,6 +22,30 @@ generate_rule_id() {
     echo $((existing_count + 1))
 }
 
+read_generated_rule_file() {
+    local rule_file="$1"
+    [ -f "$rule_file" ] || return 1
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            RULE_ID|RULE_NAME|RULE_ROLE|SECURITY_LEVEL|LISTEN_PORT|LISTEN_IP|THROUGH_IP|\
+            REMOTE_HOST|REMOTE_PORT|FORWARD_TARGET|TLS_SERVER_NAME|TLS_CERT_PATH|TLS_KEY_PATH|\
+            WS_PATH|WS_HOST|RULE_NOTE|ENABLED|CREATED_TIME|BALANCE_MODE|TARGET_STATES|WEIGHTS|\
+            FAILOVER_ENABLED|HEALTH_CHECK_INTERVAL|FAILURE_THRESHOLD|SUCCESS_THRESHOLD|\
+            CONNECTION_TIMEOUT|MPTCP_MODE|PROXY_MODE) ;;
+            *) continue ;;
+        esac
+        if [[ "$value" == \"*\" && "$value" == *\" && ${#value} -ge 2 ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+        printf -v "$key" '%s' "$value"
+    done < "$rule_file"
+}
+
 # 配置路径定义
 CONFIG_DIR="/etc/realm"
 RULES_DIR="${CONFIG_DIR}/rules"
@@ -482,7 +506,7 @@ fi
 echo -e "${BLUE}识别到 $rule_count 个转发规则:${NC}"
 for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
     if [ -f "$rule_file" ]; then
-        source "$rule_file"
+        read_generated_rule_file "$rule_file" || continue
 
         # 设置全局变量TLS_SERVER_NAME（ws_tls模式需要）
         TLS_SERVER_NAME="$TLS_SERVER_NAME"

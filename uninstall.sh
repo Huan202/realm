@@ -87,7 +87,12 @@ main() {
     rm -f /usr/local/bin/realm
     rm -f /usr/local/bin/pf
     rm -f /usr/local/bin/xwPF.sh
-    rm -rf /usr/local/bin/lib
+    rm -rf /usr/local/lib/xwpf
+    # 兼容旧版本：仅删除 xwPF 自己的模块，不删除通用 lib 目录
+    for module in core.sh rules.sh server.sh realm.sh ui.sh; do
+        rm -f "/usr/local/bin/lib/$module"
+    done
+    rmdir /usr/local/bin/lib 2>/dev/null || true
     rm -f /usr/local/bin/xwFailover.sh
     rm -f /usr/local/bin/speedtest.sh
     rm -f /usr/local/bin/port-traffic-dog.sh
@@ -104,7 +109,8 @@ main() {
     rm -f /etc/sysctl.d/90-enable-MPTCP.conf
 
     rm -f /var/lock/realm-health-check.lock
-    rm -f /tmp/realm* /var/tmp/realm* /var/log/realm*.log 2>/dev/null || true
+    rm -rf /tmp/realm_import_* 2>/dev/null || true
+    rm -f /tmp/realm_path_cache /tmp/realm_toml_*.json /var/log/realm*.log 2>/dev/null || true
     rm -f /tmp/speedtest_* /tmp/port-traffic-dog* 2>/dev/null || true
 
     remove_cron_entries

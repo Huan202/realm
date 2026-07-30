@@ -35,14 +35,38 @@ check_connectivity() {
     return $?
 }
 
+load_rule_values() {
+    local rule_file="$1"
+    [ -f "$rule_file" ] || return 1
+    unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
+    unset FORWARD_TARGET SECURITY_LEVEL TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
+    unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL FAILURE_THRESHOLD
+    unset SUCCESS_THRESHOLD CONNECTION_TIMEOUT TARGET_STATES WEIGHTS CREATED_TIME
+
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            RULE_ID|RULE_NAME|RULE_ROLE|LISTEN_PORT|LISTEN_IP|THROUGH_IP|REMOTE_HOST|REMOTE_PORT|\
+            FORWARD_TARGET|SECURITY_LEVEL|TLS_SERVER_NAME|TLS_CERT_PATH|TLS_KEY_PATH|WS_PATH|WS_HOST|\
+            ENABLED|BALANCE_MODE|FAILOVER_ENABLED|HEALTH_CHECK_INTERVAL|FAILURE_THRESHOLD|\
+            SUCCESS_THRESHOLD|CONNECTION_TIMEOUT|TARGET_STATES|WEIGHTS|CREATED_TIME) ;;
+            *) continue ;;
+        esac
+        if [[ "$value" == \"*\" && "$value" == *\" && ${#value} -ge 2 ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+        printf -v "$key" '%s' "$value"
+    done < "$rule_file"
+    [[ "${RULE_ID:-}" =~ ^[0-9]+$ && "${RULE_ROLE:-}" =~ ^[12]$ ]]
+}
+
 # 读取规则文件
 read_rule_file() {
-    local rule_file="$1"
-    if [ -f "$rule_file" ]; then
-        source "$rule_file"
-        return 0
-    fi
-    return 1
+    load_rule_values "$1"
 }
 
 # 健康检查专用的读取规则文件函数
@@ -52,16 +76,7 @@ read_rule_file_for_health_check() {
         return 1
     fi
 
-    # 清空所有变量
-    unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
-    unset FORWARD_TARGET SECURITY_LEVEL
-    unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
-    unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL
-    unset FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT
-    unset TARGET_STATES WEIGHTS CREATED_TIME
-
-    source "$rule_file"
-    return 0
+    load_rule_values "$rule_file"
 }
 
 # 查找文件路径
@@ -344,12 +359,6 @@ if [ -f "$HEALTH_STATUS_FILE" ]; then
     fi
 fi
 
-# 内置清理：清理journal日志（保留7天，每小时整点执行）
-current_minute=$(date +%M)
-if [ "$current_minute" = "00" ]; then
-    journalctl --vacuum-time=7d >/dev/null 2>&1
-fi
-
 # 获取文件锁
 exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
@@ -374,20 +383,33 @@ check_connectivity() {
 # 健康检查脚本专用的读取规则文件函数
 read_rule_file_for_health_check() {
     local rule_file="$1"
-    if [ ! -f "$rule_file" ]; then
-        return 1
-    fi
+    [ -f "$rule_file" ] || return 1
 
-    # 清空所有变量
     unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
-    unset FORWARD_TARGET SECURITY_LEVEL
-    unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
-    unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL
-    unset FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT
+    unset FORWARD_TARGET SECURITY_LEVEL TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
+    unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL FAILURE_THRESHOLD
+    unset SUCCESS_THRESHOLD CONNECTION_TIMEOUT
     unset TARGET_STATES WEIGHTS CREATED_TIME
 
-    source "$rule_file"
-    return 0
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            RULE_ID|RULE_NAME|RULE_ROLE|LISTEN_PORT|LISTEN_IP|THROUGH_IP|REMOTE_HOST|REMOTE_PORT|\
+            FORWARD_TARGET|SECURITY_LEVEL|TLS_SERVER_NAME|TLS_CERT_PATH|TLS_KEY_PATH|WS_PATH|WS_HOST|\
+            ENABLED|BALANCE_MODE|FAILOVER_ENABLED|HEALTH_CHECK_INTERVAL|FAILURE_THRESHOLD|\
+            SUCCESS_THRESHOLD|CONNECTION_TIMEOUT|TARGET_STATES|WEIGHTS|CREATED_TIME) ;;
+            *) continue ;;
+        esac
+        if [[ "$value" == \"*\" && "$value" == *\" && ${#value} -ge 2 ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+        printf -v "$key" '%s' "$value"
+    done < "$rule_file"
+    [[ "${RULE_ID:-}" =~ ^[0-9]+$ && "${RULE_ROLE:-}" =~ ^[12]$ ]]
 }
 
 
