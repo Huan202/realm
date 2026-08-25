@@ -386,4 +386,4 @@ MPTCP（启用MPTCP时创建）
 
 **⭐ 如果这个项目对您有帮助，请给个 Star 支持一下！**
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Huan202/realm&type=Date)](https://www.star-history.com/#Huan202/realm&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=Huan202/realm&type=Date)](https://star-history.dera.page/#Huan202/realm&Date)

@@ -384,4 +384,4 @@ MPTCP (created when MPTCP is enabled)
 
 **⭐ If this project is useful to you, a Star would be much appreciated!**
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Huan202/realm&type=Date)](https://www.star-history.com/#Huan202/realm&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=Huan202/realm&type=Date)](https://star-history.dera.page/#Huan202/realm&Date)
