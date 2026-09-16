@@ -141,16 +141,27 @@ jobs:
         if: steps.get-version.outputs.skip == 'false' && steps.update.outputs.update_success == 'true' && steps.cpr.outcome == 'failure'
         run: |
           set -e
-          echo "⚠️ 无法创建PR（仓库未允许 Actions 创建PR），改为直接提交到当前分支"
+          echo "⚠️ 无法创建PR（仓库未允许 Actions 创建PR），改为直接提交到 ${GITHUB_REF_NAME}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 回到本次运行的提交，避免 create-pull-request 留下的分支状态影响判断
+          git checkout -f "$GITHUB_SHA"
+
+          LATEST_VERSION="${{ steps.get-version.outputs.latest_version }}"
+          NEW_SCRIPT_VERSION="${{ steps.get-version.outputs.new_script_version }}"
+
+          # 幂等重做版本号更新
+          sed -i "s/^REALM_VERSION=\".*\"/REALM_VERSION=\"$LATEST_VERSION\"/" lib/core.sh
+          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$NEW_SCRIPT_VERSION\"/" lib/core.sh
+
           if git diff --quiet -- lib/core.sh; then
             echo "无待提交变更，跳过"
             exit 0
           fi
           git add lib/core.sh
-          git commit -m "bump: 同步更新realm ${{ steps.get-version.outputs.latest_version }}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git commit -m "bump: 同步更新realm $LATEST_VERSION"
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
 
       - name: Summary
         if: always()
