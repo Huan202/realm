@@ -107,6 +107,7 @@ CONNECTION_TIMEOUT="3"
 
 MPTCP_MODE="off"
 PROXY_MODE="off"
+PROTOCOL="${PROTOCOL:-both}"
 EOF
 
     echo -e "${GREEN}✓ 中转配置已创建 (ID: $rule_id) 端口: $listen_port->$REMOTE_IP:$remote_port${NC}"
@@ -147,6 +148,7 @@ CONNECTION_TIMEOUT="3"
 
 MPTCP_MODE="off"
 PROXY_MODE="off"
+PROTOCOL="${PROTOCOL:-both}"
 EOF
 
     if [ "$SECURITY_LEVEL" = "tls_ca" ] || [ "$SECURITY_LEVEL" = "ws_tls_ca" ]; then
@@ -438,7 +440,7 @@ get_mptcp_connections_stats() {
     local subflows=0
 
     if [ -n "$ss_output" ]; then
-        mptcp_connections=$(echo "$ss_output" | grep -c ESTAB 2>/dev/null)
+        mptcp_connections=$(echo "$ss_output" | grep -c ESTAB 2>/dev/null || true)
 
         # 统计子流数量 (总行数减1，最少为0)
         local total_lines=$(echo "$ss_output" | wc -l)
@@ -1180,6 +1182,7 @@ done
                     WS_PATH="${WS_PATH}"
                     WS_HOST="${WS_HOST}"
                     RULE_NOTE="${RULE_NOTE:-}"  # 复用现有备注
+                    PROTOCOL="${PROTOCOL:-both}"  # 复用现有转发协议
                     echo -e "${GREEN}已读取端口 $NAT_LISTEN_PORT 的现有配置${NC}"
                     break
                 fi
@@ -1249,7 +1252,7 @@ done
     # 配置远程服务器
     echo -e "${YELLOW}=== 出口服务器信息配置 ===${NC}"
     echo ""
-    
+
     while true; do
         read -p "出口服务器的IP地址或域名: " REMOTE_IP
         if [ -n "$REMOTE_IP" ]; then
@@ -1271,6 +1274,28 @@ done
             echo -e "${RED}无效端口号，请输入 1-65535 之间的数字，多端口用逗号分隔${NC}"
         fi
     done
+
+    # 转发协议选择：端口被复用时沿用现有协议，否则询问
+    if [ $port_status -ne 1 ]; then
+        echo ""
+        echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
+        echo "请选择转发协议:"
+        echo -e "${GREEN}[1]${NC} TCP+UDP 双栈（默认）"
+        echo -e "${GREEN}[2]${NC} 仅 TCP"
+        echo -e "${GREEN}[3]${NC} 仅 UDP"
+        echo ""
+        while true; do
+            read -p "请输入选择(回车默认1) [1-3]: " proto_choice
+            [ -z "$proto_choice" ] && proto_choice="1"
+            case "$proto_choice" in
+                1) PROTOCOL="both" ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
+                2) PROTOCOL="tcp"  ; echo -e "${GREEN}已选择: 仅 TCP${NC}"; break ;;
+                3) PROTOCOL="udp"  ; echo -e "${GREEN}已选择: 仅 UDP${NC}"; break ;;
+                *) echo -e "${RED}无效选择，请输入 1-3${NC}" ;;
+            esac
+        done
+        echo ""
+    fi
 
     # 测试连通性
     local connectivity_ok=true
@@ -1308,6 +1333,11 @@ done
     if [ $port_status -eq 1 ]; then
 
         echo -e "${BLUE}使用默认配置完成设置${NC}"
+    # 纯 UDP 无 TCP 连接，ws/tls 加密传输挂在 TCP 上对纯 UDP 无效，直接默认传输
+    elif [ "$PROTOCOL" = "udp" ]; then
+
+        SECURITY_LEVEL="standard"
+        echo -e "${BLUE}纯 UDP 无需传输加密，使用默认传输${NC}"
     else
 
     echo ""
@@ -1600,6 +1630,31 @@ configure_exit_server() {
         echo -e "${GREEN}✓ 所有转发目标连接测试成功！${NC}"
     fi
 
+    # 转发协议选择：服务端无端口复用分支，直接询问
+    echo ""
+    echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
+    echo "请选择转发协议:"
+    echo -e "${GREEN}[1]${NC} TCP+UDP 双栈（默认）"
+    echo -e "${GREEN}[2]${NC} 仅 TCP"
+    echo -e "${GREEN}[3]${NC} 仅 UDP"
+    echo ""
+    while true; do
+        read -p "请输入选择(回车默认1) [1-3]: " proto_choice
+        [ -z "$proto_choice" ] && proto_choice="1"
+        case "$proto_choice" in
+            1) PROTOCOL="both" ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
+            2) PROTOCOL="tcp"  ; echo -e "${GREEN}已选择: 仅 TCP${NC}"; break ;;
+            3) PROTOCOL="udp"  ; echo -e "${GREEN}已选择: 仅 UDP${NC}"; break ;;
+            *) echo -e "${RED}无效选择，请输入 1-3${NC}" ;;
+        esac
+    done
+
+    # 纯 UDP 无 TCP 连接，ws/tls 加密传输挂在 TCP 上对纯 UDP 无效，直接默认传输
+    if [ "$PROTOCOL" = "udp" ]; then
+        SECURITY_LEVEL="standard"
+        echo -e "${BLUE}纯 UDP 无需传输加密，使用默认传输${NC}"
+    else
+
     echo ""
     echo "请选择传输模式:"
     echo -e "${GREEN}[1]${NC} 默认传输 (不加密，理论最快)"
@@ -1745,6 +1800,8 @@ configure_exit_server() {
                 ;;
         esac
     done
+
+    fi
 
     echo ""
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"

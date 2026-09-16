@@ -184,6 +184,8 @@ install_realm() {
         # 检查程序完整性（基本可执行性测试）
         if ! ${REALM_PATH} --help >/dev/null 2>&1; then
             echo -e "${YELLOW}检测到 realm 文件存在但可能已损坏，将重新安装...${NC}"
+            # 损坏重装同样需要版本号，否则下载 URL 缺版本段而 404
+            LATEST_VERSION=$(get_latest_realm_version)
         else
             # 尝试获取版本信息
             local current_version=""
@@ -228,21 +230,19 @@ install_realm() {
         fi
         
         ARCH=$(uname -m)
-        # 检测 libc 类型（Alpine 使用 musl）
-        local libc_suffix="gnu"
-        if [ -f /etc/alpine-release ]; then
-            libc_suffix="musl"
-        fi
-
+        # 使用 musl 静态二进制：避免构建环境 glibc 不兼容
         case $ARCH in
             x86_64)
-                ARCH="x86_64-unknown-linux-${libc_suffix}"
+                ARCH="x86_64-unknown-linux-musl"
                 ;;
             aarch64)
-                ARCH="aarch64-unknown-linux-${libc_suffix}"
+                ARCH="aarch64-unknown-linux-musl"
                 ;;
-            armv7l|armv6l|arm)
-                ARCH="armv7-unknown-linux-gnueabihf"
+            armv7l|arm)
+                ARCH="armv7-unknown-linux-musleabihf"
+                ;;
+            armv6l)
+                ARCH="arm-unknown-linux-musleabihf"
                 ;;
             *)
                 echo -e "${RED}不支持的CPU架构: ${ARCH}${NC}"
@@ -327,6 +327,7 @@ generate_endpoints_from_rules() {
     declare -A port_configs
     declare -A port_weights
     declare -A port_roles
+    declare -A port_protocols
 
     # 第一步：收集所有启用的规则并按端口分组（不进行故障转移过滤）
     declare -A port_rule_files
@@ -334,9 +335,11 @@ generate_endpoints_from_rules() {
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
                 local port_key="$LISTEN_PORT"
+                local rule_protocol="${PROTOCOL:-both}"
 
                 # 存储端口配置（使用第一个规则的配置作为基准）
                 if [ -z "${port_configs[$port_key]}" ]; then
+                    port_protocols[$port_key]="$rule_protocol"
                     # 根据角色决定默认监听IP
                     local default_listen_ip
                     if [ "$RULE_ROLE" = "2" ]; then
@@ -353,6 +356,10 @@ generate_endpoints_from_rules() {
                 elif [ "${port_roles[$port_key]}" != "$RULE_ROLE" ]; then
                     # 检测到同一端口有不同角色的规则，跳过此规则
                     echo -e "${YELLOW}警告: 端口 $port_key 已被角色 ${port_roles[$port_key]} 的规则占用，跳过角色 $RULE_ROLE 的规则${NC}" >&2
+                    continue
+                elif [ "${port_protocols[$port_key]}" != "$rule_protocol" ]; then
+                    # 同端口不同转发协议，协议必须一致，跳过冲突规则
+                    echo -e "${YELLOW}警告: 端口 $port_key 协议为 ${port_protocols[$port_key]}，跳过协议 $rule_protocol 的规则${NC}" >&2
                     continue
                 fi
 
@@ -593,120 +600,68 @@ generate_endpoints_from_rules() {
             $transport_config"
         fi
 
-        # 添加MPTCP网络配置 - 从对应的规则文件读取MPTCP设置
-        local mptcp_config=""
+        # 构建局部 network 块：协议、MPTCP、Proxy 字段累加后一次性 emit
+        # 协议默认 both 不写字段（继承全局双栈）；MPTCP/Proxy 默认 off 不写字段
+        # 三类字段同块，realm 按 take_field 逐字段取值，互不覆盖
         local rule_file_for_port="${port_rule_files[$port_key]}"
+        local network_fields=""
 
         if [ -f "$rule_file_for_port" ]; then
-            # 临时保存当前变量状态
-            local saved_vars=$(declare -p RULE_ID RULE_NAME MPTCP_MODE 2>/dev/null || true)
+            # 临时保存会被 read_rule_file 覆盖的变量状态
+            local saved_vars=$(declare -p RULE_ID RULE_NAME PROTOCOL MPTCP_MODE PROXY_MODE 2>/dev/null || true)
 
-            # 读取该端口对应的规则文件
+            # 读取该端口对应的规则文件（一次拿到协议/MPTCP/Proxy 三个字段）
             if read_rule_file "$rule_file_for_port"; then
+                local rule_protocol="${PROTOCOL:-both}"
                 local mptcp_mode="${MPTCP_MODE:-off}"
-                local send_mptcp="false"
-                local accept_mptcp="false"
+                local proxy_mode="${PROXY_MODE:-off}"
 
-                case "$mptcp_mode" in
-                    "send")
-                        send_mptcp="true"
+                # 协议字段：仅非 both 写入，both 继承全局
+                case "$rule_protocol" in
+                    "tcp")
+                        network_fields="\"no_tcp\": false, \"use_udp\": false"
                         ;;
-                    "accept")
-                        accept_mptcp="true"
-                        ;;
-                    "both")
-                        send_mptcp="true"
-                        accept_mptcp="true"
+                    "udp")
+                        network_fields="\"no_tcp\": true, \"use_udp\": true"
                         ;;
                 esac
 
-                # 只有在需要MPTCP时才添加network配置
-                if [ "$send_mptcp" = "true" ] || [ "$accept_mptcp" = "true" ]; then
-                    mptcp_config=",
-            \"network\": {
-                \"send_mptcp\": $send_mptcp,
-                \"accept_mptcp\": $accept_mptcp
-            }"
+                # MPTCP 字段
+                local send_mptcp="false"
+                local accept_mptcp="false"
+                case "$mptcp_mode" in
+                    "send")   send_mptcp="true" ;;
+                    "accept") accept_mptcp="true" ;;
+                    "both")   send_mptcp="true"; accept_mptcp="true" ;;
+                esac
+                if [ "$send_mptcp" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"send_mptcp\": $send_mptcp"
                 fi
-            fi
+                if [ "$accept_mptcp" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"accept_mptcp\": $accept_mptcp"
+                fi
 
-            # 恢复变量状态（如果有保存的话）
-            if [ -n "$saved_vars" ]; then
-                eval "$saved_vars" 2>/dev/null || true
-            fi
-        fi
-
-        # 添加Proxy网络配置 - 从对应的规则文件读取Proxy设置
-        local proxy_config=""
-        if [ -f "$rule_file_for_port" ]; then
-            # 临时保存当前变量状态
-            local saved_vars=$(declare -p RULE_ID RULE_NAME PROXY_MODE 2>/dev/null || true)
-
-            # 读取该端口对应的规则文件
-            if read_rule_file "$rule_file_for_port"; then
-                local proxy_mode="${PROXY_MODE:-off}"
+                # Proxy 字段
                 local send_proxy="false"
                 local accept_proxy="false"
                 local send_proxy_version="2"
-
                 case "$proxy_mode" in
-                    "v1_send")
-                        send_proxy="true"
-                        send_proxy_version="1"
-                        ;;
-                    "v1_accept")
-                        accept_proxy="true"
-                        send_proxy_version="1"
-                        ;;
-                    "v1_both")
-                        send_proxy="true"
-                        accept_proxy="true"
-                        send_proxy_version="1"
-                        ;;
-                    "v2_send")
-                        send_proxy="true"
-                        send_proxy_version="2"
-                        ;;
-                    "v2_accept")
-                        accept_proxy="true"
-                        send_proxy_version="2"
-                        ;;
-                    "v2_both")
-                        send_proxy="true"
-                        accept_proxy="true"
-                        send_proxy_version="2"
-                        ;;
+                    "v1_send")   send_proxy="true"; send_proxy_version="1" ;;
+                    "v1_accept") accept_proxy="true"; send_proxy_version="1" ;;
+                    "v1_both")   send_proxy="true"; accept_proxy="true"; send_proxy_version="1" ;;
+                    "v2_send")   send_proxy="true" ;;
+                    "v2_accept") accept_proxy="true" ;;
+                    "v2_both")   send_proxy="true"; accept_proxy="true" ;;
                 esac
-
-                # 只有在需要Proxy时才添加配置
-                if [ "$send_proxy" = "true" ] || [ "$accept_proxy" = "true" ]; then
-                    local proxy_fields=""
-                    if [ "$send_proxy" = "true" ]; then
-                        proxy_fields="\"send_proxy\": $send_proxy,
-                \"send_proxy_version\": $send_proxy_version"
-                    fi
-                    if [ "$accept_proxy" = "true" ]; then
-                        if [ -n "$proxy_fields" ]; then
-                            proxy_fields="$proxy_fields,
-                \"accept_proxy\": $accept_proxy,
-                \"accept_proxy_timeout\": 5"
-                        else
-                            proxy_fields="\"accept_proxy\": $accept_proxy,
-                \"accept_proxy_timeout\": 5"
-                        fi
-                    fi
-
-                    if [ -n "$mptcp_config" ]; then
-                        # 如果已有MPTCP配置，在network内添加Proxy配置
-                        proxy_config=",
-                $proxy_fields"
-                    else
-                        # 如果没有MPTCP配置，创建新的network配置
-                        proxy_config=",
-            \"network\": {
-                $proxy_fields
-            }"
-                    fi
+                if [ "$send_proxy" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"send_proxy\": $send_proxy, \"send_proxy_version\": $send_proxy_version"
+                fi
+                if [ "$accept_proxy" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"accept_proxy\": $accept_proxy, \"accept_proxy_timeout\": 5"
                 fi
             fi
 
@@ -716,17 +671,13 @@ generate_endpoints_from_rules() {
             fi
         fi
 
-        # 合并MPTCP和Proxy配置
+        # 非空才写局部 network 块，否则 endpoint 不带 network，继承全局
         local network_config=""
-        if [ -n "$mptcp_config" ] && [ -n "$proxy_config" ]; then
-            # 两者都有，合并到一个network块中
-            network_config=$(echo "$mptcp_config" | sed 's/}//')
-            network_config="$network_config$proxy_config
+        if [ -n "$network_fields" ]; then
+            network_config=",
+            \"network\": {
+                $network_fields
             }"
-        elif [ -n "$mptcp_config" ]; then
-            network_config="$mptcp_config"
-        elif [ -n "$proxy_config" ]; then
-            network_config="$proxy_config"
         fi
 
         endpoint_config="$endpoint_config$network_config
@@ -807,7 +758,26 @@ generate_realm_config() {
 generate_service_file() {
     if [ "$INIT_SYSTEM" = "openrc" ]; then
         echo -e "${YELLOW}正在生成 OpenRC 服务文件...${NC}"
-        cat > /etc/init.d/realm <<'SVCEOF'
+        # supervise-daemon 提供崩溃自愈 + respawn 熔断；老版本 OpenRC 无此命令则降级为裸后台进程（无自愈）
+        if command -v supervise-daemon >/dev/null 2>&1; then
+            # supervise-daemon 只监控前台进程，realm 不作后台化，不能再设 command_background
+            # 防无限重启：delay×max 必须小于 period，否则熔断永远达不到（3s×5=15s < 60s）
+            cat > /etc/init.d/realm <<'SVCEOF'
+#!/sbin/openrc-run
+name="realm-xwpf"
+description="realm-xwpf forwarding"
+command="/usr/local/bin/realm"
+command_args="-c /etc/realm/config.json"
+pidfile="/run/${RC_SVCNAME}.pid"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=5
+respawn_period=60
+depend() { need net; }
+SVCEOF
+            echo -e "${GREEN}✓ OpenRC 服务文件已生成${NC}"
+        else
+            cat > /etc/init.d/realm <<'SVCEOF'
 #!/sbin/openrc-run
 name="realm-xwpf"
 command="/usr/local/bin/realm"
@@ -816,19 +786,24 @@ command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
 depend() { need net; }
 SVCEOF
+            echo -e "${BLUE}ℹ 当前 OpenRC 版本无 supervise-daemon，服务可正常启停，仅无崩溃自动重启(建议升级 openrc 至 0.21+)${NC}"
+        fi
         chmod +x /etc/init.d/realm
-        echo -e "${GREEN}✓ OpenRC 服务文件已生成${NC}"
     else
         echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
+        # Restart=always 覆盖所有崩溃路径；手动 stop 设 forbid_restart，always 也尊重，不影响菜单停止/重启
+        # StartLimitBurst/Interval 为 [Unit] 段熔断：60s 内 5 次启动超限即进 failed 停止，防配置错误无限刷屏
         cat > "$SYSTEMD_PATH" <<EOF
 [Unit]
 Description=realm-xwpf
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=${REALM_PATH} -c ${CONFIG_PATH}
-Restart=on-failure
+Restart=always
 RestartSec=3s
 
 [Install]
@@ -871,10 +846,28 @@ smart_install() {
     # 安装依赖
     manage_dependencies "install"
 
-    # 脚本更新（首次安装跳过，菜单进入则询问）
+    # 脚本更新（首次安装跳过，菜单进入则检查版本）
     if [ "${_SKIP_SCRIPT_UPDATE:-}" != "1" ]; then
-        read -p "是否更新脚本？(y/N): " update_script
-        [[ "$update_script" =~ ^[Yy]$ ]] && _bootstrap
+        echo -e "${YELLOW}正在检查脚本更新...${NC}"
+        local remote_ver=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT \
+            "https://raw.githubusercontent.com/Huan202/realm/main/lib/core.sh" 2>/dev/null | \
+            grep -E '^SCRIPT_VERSION=' | head -1 | cut -d'"' -f2)
+
+        if [ -n "$remote_ver" ] && [ "$remote_ver" != "$SCRIPT_VERSION" ]; then
+            echo -e "${YELLOW}发现脚本新版本: ${SCRIPT_VERSION} → ${remote_ver}${NC}"
+            read -p "是否更新脚本？(y/n) [默认: y]: " update_script
+            update_script="${update_script:-y}"
+            if [[ "$update_script" =~ ^[Yy]$ ]]; then
+                if _bootstrap; then
+                    # 重新加载模块使新逻辑立即生效，避免继续走旧内存函数
+                    _load_libs
+                    echo -e "${GREEN}✓ 脚本已更新并重新加载${NC}"
+                fi
+            fi
+        else
+            echo -e "${GREEN}✓ 脚本已是最新版本 ($SCRIPT_VERSION)${NC}"
+        fi
+        echo ""
     fi
 
     # 下载最新的 realm 主程序

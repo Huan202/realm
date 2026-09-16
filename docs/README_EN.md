@@ -1,6 +1,6 @@
 # Realm Full-Featured One-Click Network Forwarding Management — Pure Script Relay Server Setup
 
-[中文](README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
+[中文](../README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
 
 ---
 
@@ -13,11 +13,11 @@
 
 ### xwPF.sh Realm Forwarding Script
 
-![81ce7ea9e40068f6fda04b66ca3bd1ff.gif](https://i.mji.rip/2025/12/12/81ce7ea9e40068f6fda04b66ca3bd1ff.gif)
+![xwPF main script UI](./xwpf主脚本.gif)
 
 ### Port Traffic Dog
 
-![cc59017896d277a8b35109ae44eac977.gif](https://i.mji.rip/2025/12/12/cc59017896d277a8b35109ae44eac977.gif)
+![Port Traffic Dog UI](./流量狗.gif)
 
 ### Relay Network Link Testing Script
 ```
@@ -162,15 +162,17 @@ Select **1. Install & Configure**, then:
   - Bind specific entry or exit NIC on the relay (for multi-NIC setups)
   - More at [zhboner/realm](https://github.com/zhboner/realm)
 - **Multi-Distro Support** — Works on Debian/Ubuntu, Alpine, CentOS/RHEL and derivatives, auto-detects package manager and init system (systemd / OpenRC)
+- **Service Self-Healing** — Auto-restart on crash for both systemd and OpenRC units, with a built-in breaker to prevent log-flooding on repeated crashes
 - **Quick Start** — One-click install, lightweight, get up and running with network forwarding fast
 - **Smart Detection** — Auto-detects system architecture, port conflicts, and connection availability
 
+- **Forwarding Protocol Selection** — Per-rule choice of pure TCP / pure UDP / dual-stack (both, default); pure UDP auto-downgrades to standard and skips WS/TLS selection (the TCP ConnectOpts on transport are invalid for pure UDP); status label shows [TCP] / [UDP], both shows no label
 - **Tunnel Building** — Dual-Realm architecture with TLS, WS, WSS tunnel support
 - **Load Balancing** — Round-robin, IP hash, and configurable weight distribution
 - **Failover** — Automatic failure detection using native system tools, keeping things lightweight
 - **Rule Annotations** — Clear labeling for every rule — no more memorizing port mappings
 
-- **Port Traffic Dog** — Per-port traffic stats, rate limiting, throttling, with configurable notifications
+- **Port Traffic Dog** — Per-port and whole-server traffic stats (whole-server enabled by default), port/whole-server rate limiting, throttling, with configurable notifications
 - **Intuitive MPTCP Configuration** — Clean, visual MPTCP interface
 - **Network Link Testing** — Measure latency, bandwidth, stability, and large-packet routing (powered by hping3, iperf3, nexttrace, bgp.tools)
 
@@ -190,7 +192,7 @@ Realm on the relay simply passes packets received on the configured listen IP:po
 
 The encryption protocol for the entire link is therefore determined by the exit server's application.
 
-![e3c0a9ebcee757b95663fc73adc4e880.png](https://i.mji.rip/2025/07/17/e3c0a9ebcee757b95663fc73adc4e880.png)
+![Single-end forwarding architecture](./单端转发架构.png)
 
 </details>
 
@@ -203,7 +205,7 @@ An extra Realm-to-Realm encrypted transport layer is added between the two Realm
 
 #### The relay's encryption type, SNI domain, etc. must match the exit server's — otherwise decryption will fail
 
-![4c1f0d860cd89ca79f4234dd23f81316.png](https://i.mji.rip/2025/07/17/4c1f0d860cd89ca79f4234dd23f81316.png)
+![Dual-end tunnel architecture](./双端隧道架构.png)
 
 </details>
 
@@ -211,10 +213,10 @@ An extra Realm-to-Realm encrypted transport layer is added between the two Realm
 <summary><strong>Load Balancing + Failover</strong></summary>
 
 - Same port forwarding across multiple exit servers
-![a9f7c94e9995022557964011d35c3ad4.png](https://i.mji.rip/2025/07/15/a9f7c94e9995022557964011d35c3ad4.png)
+![Load balancing](./负载均衡.png)
 
 - Frontend > Multiple Relays > Single Exit
-![2cbc533ade11a8bcbbe63720921e9e05.png](https://i.mji.rip/2025/07/17/2cbc533ade11a8bcbbe63720921e9e05.png)
+![Frontend multi-relay single-exit](./前置多中转单落地.png)
 
 - `Round Robin` mode (roundrobin)
 
@@ -361,8 +363,10 @@ Port Traffic Dog (downloaded when selected)
 └── /etc/port-traffic-dog/
     ├── config.json                      # Monitoring configuration
     ├── traffic_data.json                # Traffic data backup
+    ├── vps_traffic.json                 # Whole-server traffic collection data
     ├── notifications/                   # Notification modules
-    │   └── telegram.sh                  # Telegram notification module
+    │   ├── telegram.sh                  # Telegram notification module
+    │   └── webhook.sh                   # Webhook notification module (WeCom / Feishu / DingTalk)
     └── logs/                            # Log directory
 
 Relay Network Link Test (downloaded when selected)
@@ -379,9 +383,14 @@ MPTCP (created when MPTCP is enabled)
 
 - **More Projects:** [https://github.com/Huan202](https://github.com/Huan202)
 - **Bug Reports:** [GitHub Issues](https://github.com/Huan202/realm/issues)
+- **Linux.do** [https://linux.do/](https://linux.do/)
 
 ---
 
 **⭐ If this project is useful to you, a Star would be much appreciated!**
+
+## 💖 If this helps you
+
+<img src="./zywe_赞赏码.jpg" alt="zywe sponsor QR" width="50%">
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=Huan202/realm&type=Date)](https://star-history.dera.page/#Huan202/realm&Date)
